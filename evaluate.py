@@ -5,7 +5,7 @@ import sys
 
 def run_exec(exe, m, n, p):
     """Run the executable with dimensions and capture its output."""
-    cmd = [f"./{exe}", str(m), str(n), str(p)]
+    cmd = [f"./build/{exe}", str(m), str(n), str(p)]
     cp = subprocess.run(cmd, capture_output=True, text=True, check=True)
     return cp.stdout
 
@@ -48,8 +48,8 @@ def validate(A, B, C, tol=1e-5):
     return False, info, D
 
 def main():
-    exe = "main"
-    # exe = "unoptimized" 
+    exe = sys.argv[1] if len(sys.argv) > 1 else "main"
+    
     for size in range(2, 129):
         print(f"Testing {size}×{size}×{size}...", flush=True)
         out = run_exec(exe, size, size, size)
