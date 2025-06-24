@@ -188,7 +188,7 @@ float *pad_t_mat(const float *src, size_t r, size_t c, size_t padr, size_t padc)
     memset(dst, 0, padr * padc * sizeof(float));
     for (size_t i = 0; i < r; i++)
         for (size_t j = 0; j < c; j++)
-            dst[j * padc + i] = src[i * c + j];
+            dst[j * padr + i] = src[i * c + j];
     return dst;
 }
 
@@ -217,7 +217,7 @@ void print_mat(const float *mat, size_t m, size_t n)
 {
     for (size_t i = 0; i < m; i++) {
         for (size_t j = 0; j < n; j++) {
-            printf("%.2f", mat[i * n + j]);
+            printf("%.6f", mat[i * n + j]);
             if (j < n - 1)
                 printf(", ");
         }
