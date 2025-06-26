@@ -47,11 +47,25 @@ static inline void mm_edge(float *A,
     }
 }
 
+
+/*
+    * Matrix multiplication with tiling and edge handling.
+    * A: m x n matrix
+    * B: n x p matrix
+    * C: m x p matrix (result)
+    * m: number of rows in A and C
+    * n: number of columns in A and rows in B
+    * p: number of columns in B and C
+    *
+    * The function uses a tile size of TILE_SIZE x TILE_SIZE for the main computation,
+    * and handles edge cases where the dimensions are not multiples of TILE_SIZE.
+    *
+*/
 void mm(float *A, float *B, float *C, size_t m, size_t n, size_t p)
 {
-    const size_t inm = m - m % TILE_SIZE;
-    const size_t inn = n - n % TILE_SIZE;
-    const size_t inp = p - p % TILE_SIZE;
+    const size_t inm = m - m % TILE_SIZE; // 可完整切 2×2 tile 的最後一列索引+1
+    const size_t inn = n - n % TILE_SIZE; // 可完整切 2×2 tile 的最後一行索引+1
+    const size_t inp = p - p % TILE_SIZE; // 可完整切 2×2 tile 的最後一欄索引+1
 
     memset(C, 0, m * p * sizeof(float));
 

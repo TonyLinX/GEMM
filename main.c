@@ -64,6 +64,7 @@ void *worker_thread(void *arg)
         while (!pool->head && !atomic_load(&pool->shutdown))
             pthread_cond_wait(&pool->not_empty, &pool->lock);
 
+        //如果是被「關閉通知」喚醒，那這條 thread 不該再做事，直接退出：
         if (atomic_load(&pool->shutdown)) {
             pthread_mutex_unlock(&pool->lock);
             return NULL;
@@ -77,7 +78,16 @@ void *worker_thread(void *arg)
 
         mm_tile(&node->task);
         free(node);
+
+        //任務數量減 1，使用 atomic 確保 thread-safe
         atomic_fetch_sub(&pool->tasks_remaining, 1);
+
+        /*如果這條 thread 完成了最後一個任務，通知所有
+        在主程式裡等 wait_for_completion() 的 thread，
+        因為有很多thread 可能同時在等待某一個thread完成
+        最後一個任務，所以要用 pthread_cond_broadcast，
+        不像 pthread_cond_signal 只會喚醒一個 thread。
+        */
         if (atomic_load(&pool->tasks_remaining) == 0)
             pthread_cond_broadcast(&pool->all_done);
     }
@@ -115,6 +125,8 @@ void enqueue(threadpool_t *pool, task_t task)
     else
         pool->head = node;
     pool->tail = node;
+
+    //有一條新的任務近來，喚醒一條 worker thread
     pthread_cond_signal(&pool->not_empty);
     pthread_mutex_unlock(&pool->lock);
 }
@@ -159,9 +171,9 @@ void mm(float *A,
     for (size_t i = 0; i < m; i += TILE_SIZE) {
         for (size_t j = 0; j < p; j += TILE_SIZE) {
             task_t task = {
-                .A = A + i * n,
-                .B = B + j * n,
-                .C = C + i * p + j,
+                .A = A + i * n,       //轉成一維的列
+                .B = B + j * n,      //轉成一維的行
+                .C = C + i * p + j, //轉成一維的列行
                 .stride_a = n,
                 .stride_b = n,
                 .stride_c = p,
@@ -192,7 +204,7 @@ float *pad_t_mat(const float *src, size_t r, size_t c, size_t padr, size_t padc)
     return dst;
 }
 
-void unpad_mat(const float *src,
+void unpad_mat(const float *src,       
                float *dst,
                size_t r,
                size_t c,
@@ -225,6 +237,7 @@ void print_mat(const float *mat, size_t m, size_t n)
     }
     printf("---\n");
 }
+
 int main(int argc, char *argv[])
 {
     if (argc < 4) {
