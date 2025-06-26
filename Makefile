@@ -49,5 +49,17 @@ lockfree_bench:
 validate:
 	python3 evaluate.py $(EXE)
 
+throughput:
+	@echo "threads       time_sec(lock-based)        time_sec(lock-free)" > throughput.txt
+	for i in $(shell seq 1 16); do \
+		echo "Running with $$i threads..."; \
+		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_MAIN_BENCH) $(SRC_MAIN); \
+		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREE_BENCH) $(SRC_LOCKFREE); \
+		time_main=`./build/main_bench 2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+		time_lockfree=`./build/lockfree_bench 2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+		printf "%-13d %-28s %-28s\n" $$i $$time_main $$time_lockfree >> throughput.txt; \
+	done
+plot:
+	gnuplot gnuplot/plot_throughput.gp
 clean:
 	rm -rf $(BINDIR)

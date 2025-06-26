@@ -11,7 +11,9 @@
 #define TILE_SIZE 64
 #define MICRO_TILE 8
 #define MEM_ALIGNMENT 64
+#ifndef N_CORES
 #define N_CORES 12
+#endif
 
 #define ALIGN_UP(x) (((x) + TILE_SIZE - 1) & ~(TILE_SIZE - 1))
 
