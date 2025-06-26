@@ -25,16 +25,21 @@ typedef struct {
 } task_t;
 
 typedef struct {
-    task_t *tasks;            // ring buffer of tasks
-    size_t capacity;          // total slots in ring buffer
-    atomic_size_t head;       // consumer index
-    atomic_size_t tail;       // producer index
-    sem_t not_empty;          // counts available tasks
+    task_t *tasks;       // ring buffer of tasks
+    size_t capacity;     // slots per ring buffer
+    atomic_size_t head;  // consumer index
+    atomic_size_t tail;  // producer index
+    sem_t sem;           // counts available tasks
+} ring_buffer_t;
+
+typedef struct {
+    ring_buffer_t *queues;      // array of per-thread queues
+    pthread_t *threads;         // worker threads
+    size_t num_threads;         // number of workers
+    atomic_size_t next_queue;   // for round-robin dispatch
     pthread_mutex_t done_lock;
     pthread_cond_t all_done;
-    pthread_t *threads;
-    size_t num_threads;
-    atomic_int tasks_remaining;
+    atomic_int tasks_remaining; // across all queues
     _Atomic bool shutdown;
 } threadpool_t;
 
@@ -58,16 +63,26 @@ static inline void mm_tile(const task_t *task)
     }
 }
 
+typedef struct {
+    threadpool_t *pool;
+    size_t index;
+} worker_arg_t;
+
 void *worker_thread(void *arg)
 {
-    threadpool_t *pool = arg;
+    worker_arg_t *warg = arg;
+    threadpool_t *pool = warg->pool;
+    size_t idx_q = warg->index;
+    ring_buffer_t *queue = &pool->queues[idx_q];
+    free(warg);
+
     while (true) {
-        sem_wait(&pool->not_empty);
+        sem_wait(&queue->sem);
         if (atomic_load(&pool->shutdown))
             break;
 
-        size_t idx = atomic_fetch_add(&pool->head, 1) % pool->capacity;
-        task_t task = pool->tasks[idx];
+        size_t idx = atomic_fetch_add(&queue->head, 1) % queue->capacity;
+        task_t task = queue->tasks[idx];
 
         mm_tile(&task);
         atomic_fetch_sub(&pool->tasks_remaining, 1);
@@ -85,17 +100,24 @@ void init_thread_pool(threadpool_t *pool, size_t num_threads, size_t capacity)
     *pool = (threadpool_t){
         .num_threads = num_threads,
         .threads = malloc(num_threads * sizeof(pthread_t)),
-        .capacity = capacity,
-        .tasks = malloc(capacity * sizeof(task_t)),
+        .queues = calloc(num_threads, sizeof(ring_buffer_t)),
     };
-    atomic_init(&pool->head, 0);
-    atomic_init(&pool->tail, 0);
-    sem_init(&pool->not_empty, 0, 0);
+    atomic_init(&pool->next_queue, 0);
     pthread_mutex_init(&pool->done_lock, NULL);
     pthread_cond_init(&pool->all_done, NULL);
 
     for (size_t i = 0; i < num_threads; i++) {
-        pthread_create(&pool->threads[i], NULL, worker_thread, pool);
+        ring_buffer_t *q = &pool->queues[i];
+        q->capacity = capacity;
+        q->tasks = calloc(capacity, sizeof(task_t));
+        atomic_init(&q->head, 0);
+        atomic_init(&q->tail, 0);
+        sem_init(&q->sem, 0, 0);
+
+        worker_arg_t *warg = malloc(sizeof(worker_arg_t));
+        *warg = (worker_arg_t){.pool = pool, .index = i};
+        pthread_create(&pool->threads[i], NULL, worker_thread, warg);
+
         cpu_set_t cpuset;
         CPU_ZERO(&cpuset);
         CPU_SET(i % N_CORES, &cpuset);
@@ -105,10 +127,13 @@ void init_thread_pool(threadpool_t *pool, size_t num_threads, size_t capacity)
 
 void enqueue(threadpool_t *pool, task_t task)
 {
-    size_t idx = atomic_fetch_add(&pool->tail, 1) % pool->capacity;
-    pool->tasks[idx] = task;
+    size_t qid = atomic_fetch_add(&pool->next_queue, 1) % pool->num_threads;
+    ring_buffer_t *q = &pool->queues[qid];
+
+    size_t idx = atomic_fetch_add(&q->tail, 1) % q->capacity;
+    q->tasks[idx] = task;
     atomic_fetch_add(&pool->tasks_remaining, 1);
-    sem_post(&pool->not_empty);
+    sem_post(&q->sem);
 }
 
 void wait_for_completion(threadpool_t *pool)
@@ -123,14 +148,18 @@ void destroy_thread_pool(threadpool_t *pool)
 {
     atomic_store(&pool->shutdown, true);
     for (size_t i = 0; i < pool->num_threads; i++)
-        sem_post(&pool->not_empty); // wake workers
+        sem_post(&pool->queues[i].sem); // wake workers
 
     for (size_t i = 0; i < pool->num_threads; i++)
         pthread_join(pool->threads[i], NULL);
 
-    free(pool->tasks);
+    for (size_t i = 0; i < pool->num_threads; i++) {
+        ring_buffer_t *q = &pool->queues[i];
+        free(q->tasks);
+        sem_destroy(&q->sem);
+    }
+    free(pool->queues);
     free(pool->threads);
-    sem_destroy(&pool->not_empty);
     pthread_mutex_destroy(&pool->done_lock);
     pthread_cond_destroy(&pool->all_done);
 }

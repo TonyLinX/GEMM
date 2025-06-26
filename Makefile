@@ -6,20 +6,25 @@ CFLAGS_BENCH = -O2 -pthread
 BINDIR = build
 SRC_MAIN = main.c
 SRC_LOCKFREE = lockfree.c
+SRC_LOCKFREERR = lockfree_rr.c
 SRC_UNOPT = unoptimized.c
 
 EXE_MAIN = $(BINDIR)/main
 EXE_LOCKFREE = $(BINDIR)/lockfree
+EXE_LOCKFREERR = $(BINDIR)/lockfree_rr
 EXE_UNOPT = $(BINDIR)/unoptimized
 # executables without validation
 EXE_MAIN_BENCH = $(BINDIR)/main_bench
 EXE_LOCKFREE_BENCH = $(BINDIR)/lockfree_bench
+EXE_LOCKFREERR_BENCH = $(BINDIR)/lockfree_rr_bench
 EXE_UNOPT_BENCH = $(BINDIR)/unoptimized_bench
 
-.PHONY: all main lockfree unoptimized main_bench lockfree_bench unoptimized_bench validate clean
+.PHONY: all main lockfree lockfree_rr unoptimized \
+    main_bench lockfree_bench lockfree_rr_bench unoptimized_bench \
+    validate clean
 
-all: main lockfree unoptimized
-all_bench: main_bench lockfree_bench unoptimized_bench
+all: main lockfree lockfree_rr unoptimized
+all_bench: main_bench lockfree_bench lockfree_rr_bench unoptimized_bench
 
 main:
 	mkdir -p $(BINDIR)
@@ -33,6 +38,10 @@ lockfree:
 	mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS) -o $(EXE_LOCKFREE) $(SRC_LOCKFREE)
 
+lockfree_rr:
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS) -o $(EXE_LOCKFREERR) $(SRC_LOCKFREERR)
+
 main_bench:
 	mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS_BENCH) -o $(EXE_MAIN_BENCH) $(SRC_MAIN)
@@ -44,6 +53,10 @@ unoptimized_bench:
 lockfree_bench:
 	mkdir -p $(BINDIR)
 	$(CC) $(CFLAGS_BENCH) -o $(EXE_LOCKFREE_BENCH) $(SRC_LOCKFREE)
+
+lockfree_rr_bench:
+	mkdir -p $(BINDIR)
+	$(CC) $(CFLAGS_BENCH) -o $(EXE_LOCKFREERR_BENCH) $(SRC_LOCKFREERR)
 
 # 使用 EXE=main 或 EXE=unoptimized 呼叫
 validate:
