@@ -84,14 +84,11 @@ void *worker_thread(void *arg)
         //任務數量減 1，使用 atomic 確保 thread-safe
         atomic_fetch_sub(&pool->tasks_remaining, 1);
 
-        /*如果這條 thread 完成了最後一個任務，通知所有
-        在主程式裡等 wait_for_completion() 的 thread，
-        因為有很多thread 可能同時在等待某一個thread完成
-        最後一個任務，所以要用 pthread_cond_broadcast，
-        不像 pthread_cond_signal 只會喚醒一個 thread。
-        */
-        if (atomic_load(&pool->tasks_remaining) == 0)
+        if (atomic_load(&pool->tasks_remaining) == 0){
+            pthread_mutex_lock(&pool->lock);
             pthread_cond_broadcast(&pool->all_done);
+            pthread_mutex_unlock(&pool->lock);
+        }
     }
     return NULL;
 }

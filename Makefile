@@ -1,27 +1,27 @@
 # Makefile for Q12 project
 CC = gcc
-CFLAGS = -O2 -pthread -DVALIDATE
+CFLAGS = -O2 -pthread -DVALIDATE -g 
 # Flags for performance builds without validation output
-CFLAGS_BENCH = -O2 -pthread
+CFLAGS_BENCH = -O2 -pthread -g
 BINDIR = build
-SRC_MAIN = main.c
-SRC_LOCKFREE = lockfree.c
-SRC_LOCKFREERR = lockfree_rr.c
-SRC_UNOPT = unoptimized.c
+SRC_MAIN        = main.c
+SRC_LOCKFREE    = lockfree.c
+SRC_LOCKFREERR  = lockfree_rr.c
+SRC_UNOPT       = unoptimized.c
 
-EXE_MAIN = $(BINDIR)/main
-EXE_LOCKFREE = $(BINDIR)/lockfree
-EXE_LOCKFREERR = $(BINDIR)/lockfree_rr
-EXE_UNOPT = $(BINDIR)/unoptimized
+EXE_MAIN        = $(BINDIR)/main
+EXE_LOCKFREE    = $(BINDIR)/lockfree
+EXE_LOCKFREERR  = $(BINDIR)/lockfree_rr
+EXE_UNOPT       = $(BINDIR)/unoptimized
 # executables without validation
-EXE_MAIN_BENCH = $(BINDIR)/main_bench
-EXE_LOCKFREE_BENCH = $(BINDIR)/lockfree_bench
+EXE_MAIN_BENCH       = $(BINDIR)/main_bench
+EXE_LOCKFREE_BENCH   = $(BINDIR)/lockfree_bench
 EXE_LOCKFREERR_BENCH = $(BINDIR)/lockfree_rr_bench
-EXE_UNOPT_BENCH = $(BINDIR)/unoptimized_bench
+EXE_UNOPT_BENCH      = $(BINDIR)/unoptimized_bench
 
-.PHONY: all main lockfree lockfree_rr unoptimized \
-    main_bench lockfree_bench lockfree_rr_bench unoptimized_bench \
-    validate clean
+.PHONY: all all_bench main lockfree lockfree_rr unoptimized \
+        main_bench lockfree_bench lockfree_rr_bench unoptimized_bench \
+        validate throughput plot clean
 
 all: main lockfree lockfree_rr unoptimized
 all_bench: main_bench lockfree_bench lockfree_rr_bench unoptimized_bench
@@ -62,17 +62,41 @@ lockfree_rr_bench:
 validate:
 	python3 evaluate.py $(EXE)
 
+# ⇣⇣⇣ 這裡新增 lockfree_rr 測試 ⇣⇣⇣
 throughput:
-	@echo "threads       time_sec(lock-based)        time_sec(lock-free)" > throughput.txt
+	@echo "threads       time_sec(lock-based)        time_sec(lock-free)         time_sec(lockfree-rr)" > throughput.txt
 	for i in $(shell seq 1 16); do \
 		echo "Running with $$i threads..."; \
-		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_MAIN_BENCH) $(SRC_MAIN); \
-		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREE_BENCH) $(SRC_LOCKFREE); \
-		time_main=`./build/main_bench 2048 2048 2048 | grep Time | awk '{print $$2}'`; \
-		time_lockfree=`./build/lockfree_bench 2048 2048 2048 | grep Time | awk '{print $$2}'`; \
-		printf "%-13d %-28s %-28s\n" $$i $$time_main $$time_lockfree >> throughput.txt; \
+		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_MAIN_BENCH)        $(SRC_MAIN);        \
+		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREE_BENCH)    $(SRC_LOCKFREE);    \
+		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREERR_BENCH)  $(SRC_LOCKFREERR);  \
+		time_main=`          ./$(EXE_MAIN_BENCH)       2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+		time_lockfree=`      ./$(EXE_LOCKFREE_BENCH)    2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+		time_lockfree_rr=`   ./$(EXE_LOCKFREERR_BENCH)  2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+		printf "%-13d %-28s %-28s %-28s\n" $$i $$time_main $$time_lockfree $$time_lockfree_rr >> throughput.txt; \
 	done
+
+# ⇣⇣⇣ 這裡新增 lockfree_rr 測試 ⇣⇣⇣
+# throughput:
+# 	@echo "threads       time_sec(lock-based)        time_sec(lock-free)" > throughput.txt
+# 	for i in $(shell seq 1 16); do \
+# 		echo "Running with $$i threads..."; \
+# 		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_MAIN_BENCH)        $(SRC_MAIN);        \
+# 		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREE_BENCH)    $(SRC_LOCKFREE);    \
+# 		time_main=`          ./$(EXE_MAIN_BENCH)       2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+# 		time_lockfree=`      ./$(EXE_LOCKFREE_BENCH)    2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+# 		printf "%-13d %-28s %-28s %-28s\n" $$i $$time_main $$time_lockfree >> throughput.txt; \
+# 	done
+
 plot:
 	gnuplot gnuplot/plot_throughput.gp
+
 clean:
 	rm -rf $(BINDIR)
+
+
+## Lock-based
+#perf stat -r 10 -e cache-misses,cs ./build/main_bench 2048 2048 2048
+
+# Lock-free
+#perf stat -r 10 -e cache-misses,cs ./build/lockfree_bench 2048 2048 2048

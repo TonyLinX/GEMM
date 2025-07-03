@@ -9,6 +9,8 @@
 #include <string.h>
 #include <unistd.h>
 
+#define STEAL_CHUNK 4  
+#define SPIN_LIMIT 1024
 #define TILE_SIZE 64
 #define MICRO_TILE 8
 #define MEM_ALIGNMENT 64
@@ -17,14 +19,20 @@
 #endif
 
 #define ALIGN_UP(x) (((x) + TILE_SIZE - 1) & ~(TILE_SIZE - 1))
-
+static inline void cpu_relax(void) {
+#if defined(__x86_64__) || defined(__i386__)
+    __asm__ __volatile__("pause");
+#else
+    sched_yield();
+#endif
+}
 typedef struct {
     float *A, *B, *C;
     size_t stride_a, stride_b, stride_c;
     size_t n_k;
 } task_t;
 
-typedef struct {
+typedef struct{
     task_t *tasks;       // ring buffer of tasks
     size_t capacity;     // slots per ring buffer
     atomic_size_t head;  // consumer index
@@ -42,6 +50,46 @@ typedef struct {
     atomic_int tasks_remaining; // across all queues
     _Atomic bool shutdown;
 } threadpool_t;
+
+
+static inline bool try_dequeue_task(ring_buffer_t *q, task_t *out)
+{
+    if (sem_trywait(&q->sem) != 0)      /* 目前沒任務 → EAGAIN */
+        return false;
+
+    size_t idx = atomic_fetch_add_explicit(&q->head, 1,
+                                           memory_order_relaxed) % q->capacity;
+    *out = q->tasks[idx];
+    return true;
+}
+
+static bool steal_batch(ring_buffer_t *q, task_t *buf, size_t *n_stolen)
+{
+    size_t head = atomic_load_explicit(&q->head, memory_order_relaxed);
+    size_t tail = atomic_load_explicit(&q->tail, memory_order_acquire);
+
+    size_t available = tail - head;
+    if (available <= STEAL_CHUNK)
+        return false;                      /* 不夠就別偷 */
+
+    size_t new_head = head + STEAL_CHUNK;
+
+    /* CAS 把 head 往前推 – claim 這一段 */
+    if (atomic_compare_exchange_strong_explicit(
+            &q->head, &head, new_head,
+            memory_order_acquire, memory_order_relaxed))
+    {
+        for (size_t k = 0; k < STEAL_CHUNK; ++k){
+            buf[k] = q->tasks[(head + k) % q->capacity];
+            sem_trywait(&q->sem); 
+        }
+            
+
+        *n_stolen = STEAL_CHUNK;
+        return true;
+    }
+    return false;
+}
 
 static inline void mm_tile(const task_t *task)
 {
@@ -70,20 +118,59 @@ typedef struct {
 
 void *worker_thread(void *arg)
 {
-    worker_arg_t *warg = arg;
-    threadpool_t *pool = warg->pool;
-    size_t idx_q = warg->index;
-    ring_buffer_t *queue = &pool->queues[idx_q];
+    worker_arg_t  *warg   = arg;
+    threadpool_t  *pool   = warg->pool;
+    size_t         selfID = warg->index;
+    ring_buffer_t *selfQ  = &pool->queues[selfID];
     free(warg);
 
-    while (true) {
-        sem_wait(&queue->sem);
+    task_t task;   
+    task_t steal_buf[STEAL_CHUNK]; // 偷到的任務暫存在這
+    size_t steal_n = 0, steal_pos = 0;
+    for (;;) {
+        /* 先吃完前面偷到的任務 */
+        if (steal_pos < steal_n) {
+            mm_tile(&steal_buf[steal_pos++]);
+            atomic_fetch_sub(&pool->tasks_remaining, 1);
+            if (atomic_load(&pool->tasks_remaining) == 0) {
+                pthread_mutex_lock(&pool->done_lock);
+                pthread_cond_broadcast(&pool->all_done);
+                pthread_mutex_unlock(&pool->done_lock);
+            }
+            continue;
+        }
+
+        /* 試著從自己 queue 拿任務 */
+        if (try_dequeue_task(selfQ, &task))
+            goto got_job;
+
+        /* busy-wait + work stealing */
+        for (int spin = 0; spin < SPIN_LIMIT; ++spin) {
+            for (size_t off = 1; off < pool->num_threads; ++off) {
+                size_t victimID = (selfID + off) % pool->num_threads;
+                ring_buffer_t *vQ = &pool->queues[victimID];
+
+                if (steal_batch(vQ, steal_buf, &steal_n)) {
+                    steal_pos = 0;
+                    goto continue_loop;
+                }
+            }
+
+            if (atomic_load(&pool->shutdown))
+                return NULL;
+
+            cpu_relax();
+        }
+
+        /* sleep 等自己 queue 的任務來 */
+        sem_wait(&selfQ->sem);
         if (atomic_load(&pool->shutdown))
-            break;
+            return NULL;
 
-        size_t idx = atomic_fetch_add(&queue->head, 1) % queue->capacity;
-        task_t task = queue->tasks[idx];
+        size_t idx = atomic_fetch_add_explicit(&selfQ->head, 1, memory_order_relaxed) % selfQ->capacity;
+        task = selfQ->tasks[idx];
 
+    got_job:
         mm_tile(&task);
         atomic_fetch_sub(&pool->tasks_remaining, 1);
         if (atomic_load(&pool->tasks_remaining) == 0) {
@@ -91,6 +178,9 @@ void *worker_thread(void *arg)
             pthread_cond_broadcast(&pool->all_done);
             pthread_mutex_unlock(&pool->done_lock);
         }
+
+    continue_loop:
+        continue;
     }
     return NULL;
 }
@@ -129,7 +219,6 @@ void enqueue(threadpool_t *pool, task_t task)
 {
     size_t qid = atomic_fetch_add(&pool->next_queue, 1) % pool->num_threads;
     ring_buffer_t *q = &pool->queues[qid];
-
     size_t idx = atomic_fetch_add(&q->tail, 1) % q->capacity;
     q->tasks[idx] = task;
     atomic_fetch_add(&pool->tasks_remaining, 1);

@@ -13,7 +13,7 @@ Executables built in `build/`:
 
 ```bash
 make all
-./build/main 1024 1024 1024
+./build/main 2048 2048 2048
 ```
 
 Running `make` creates the `build/` directory.
