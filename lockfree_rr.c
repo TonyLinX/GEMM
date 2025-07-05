@@ -32,9 +32,10 @@ typedef struct {
     size_t n_k;
 } task_t;
 
-typedef struct{
+typedef struct __attribute__((aligned(MEM_ALIGNMENT))) {
     task_t *tasks;       // ring buffer of tasks
     size_t capacity;     // slots per ring buffer
+    size_t mask;
     atomic_size_t head;  // consumer index
     atomic_size_t tail;  // producer index
     sem_t sem;           // counts available tasks
@@ -58,7 +59,7 @@ static inline bool try_dequeue_task(ring_buffer_t *q, task_t *out)
         return false;
 
     size_t idx = atomic_fetch_add_explicit(&q->head, 1,
-                                           memory_order_relaxed) % q->capacity;
+                                           memory_order_relaxed) & q->mask;
     *out = q->tasks[idx];
     return true;
 }
@@ -80,7 +81,7 @@ static bool steal_batch(ring_buffer_t *q, task_t *buf, size_t *n_stolen)
             memory_order_acquire, memory_order_relaxed))
     {
         for (size_t k = 0; k < STEAL_CHUNK; ++k){
-            buf[k] = q->tasks[(head + k) % q->capacity];
+            buf[k] = q->tasks[(head + k) & q->mask];
             sem_trywait(&q->sem); 
         }
             
@@ -110,7 +111,6 @@ static inline void mm_tile(const task_t *task)
         }
     }
 }
-
 typedef struct {
     threadpool_t *pool;
     size_t index;
@@ -185,6 +185,14 @@ void *worker_thread(void *arg)
     return NULL;
 }
 
+int next_two_power(int n)
+{
+    int power = 1;
+    while (power < n)
+        power <<= 1;
+    return power;
+}
+
 void init_thread_pool(threadpool_t *pool, size_t num_threads, size_t capacity)
 {
     *pool = (threadpool_t){
@@ -198,8 +206,9 @@ void init_thread_pool(threadpool_t *pool, size_t num_threads, size_t capacity)
 
     for (size_t i = 0; i < num_threads; i++) {
         ring_buffer_t *q = &pool->queues[i];
-        q->capacity = capacity;
-        q->tasks = calloc(capacity, sizeof(task_t));
+        q->capacity = next_two_power(capacity); // ensure power of two
+        q->mask = q->capacity - 1; // for modulo operations
+        q->tasks = calloc(q->capacity, sizeof(task_t));
         atomic_init(&q->head, 0);
         atomic_init(&q->tail, 0);
         sem_init(&q->sem, 0, 0);
@@ -219,7 +228,7 @@ void enqueue(threadpool_t *pool, task_t task)
 {
     size_t qid = atomic_fetch_add(&pool->next_queue, 1) % pool->num_threads;
     ring_buffer_t *q = &pool->queues[qid];
-    size_t idx = atomic_fetch_add(&q->tail, 1) % q->capacity;
+    size_t idx = atomic_fetch_add(&q->tail, 1) & q->mask;
     q->tasks[idx] = task;
     atomic_fetch_add(&pool->tasks_remaining, 1);
     sem_post(&q->sem);
@@ -350,7 +359,7 @@ int main(int argc, char *argv[])
     fill_rand(B, n * p);
 
     size_t padm = ALIGN_UP(m), padn = ALIGN_UP(n), padp = ALIGN_UP(p);
-    size_t capacity = (padm / TILE_SIZE) * (padp / TILE_SIZE);
+    size_t capacity = (padm / TILE_SIZE) * (padp / TILE_SIZE) / N_CORES + 1; 
     init_thread_pool(&pool, N_CORES, capacity);
 
     float *padA = pad_mat(A, m, n, padm, padn);
