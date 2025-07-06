@@ -32,6 +32,12 @@ typedef struct {
     size_t n_k;
 } task_t;
 
+typedef struct {
+    size_t steal_attempts;
+    size_t steal_success;
+    size_t steal_fail;
+} thread_stats_t;
+
 typedef struct __attribute__((aligned(MEM_ALIGNMENT))) {
     task_t *tasks;       // ring buffer of tasks
     size_t capacity;     // slots per ring buffer
@@ -50,6 +56,7 @@ typedef struct {
     pthread_cond_t all_done;
     atomic_int tasks_remaining; // across all queues
     _Atomic bool shutdown;
+    thread_stats_t *stats;
 } threadpool_t;
 
 
@@ -149,19 +156,23 @@ void *worker_thread(void *arg)
             for (size_t off = 1; off < pool->num_threads; ++off) {
                 size_t victimID = (selfID + off) % pool->num_threads;
                 ring_buffer_t *vQ = &pool->queues[victimID];
-
+                
+                // 試圖偷任務
+                pool->stats[selfID].steal_attempts++;
                 if (steal_batch(vQ, steal_buf, &steal_n)) {
+                    pool->stats[selfID].steal_success++;
                     steal_pos = 0;
                     goto continue_loop;
                 }
+                pool->stats[selfID].steal_fail++; // 一整輪 spin 都沒偷到
             }
-
+            
             if (atomic_load(&pool->shutdown))
                 return NULL;
 
             cpu_relax();
         }
-
+    
         /* sleep 等自己 queue 的任務來 */
         sem_wait(&selfQ->sem);
         if (atomic_load(&pool->shutdown))
@@ -199,7 +210,9 @@ void init_thread_pool(threadpool_t *pool, size_t num_threads, size_t capacity)
         .num_threads = num_threads,
         .threads = malloc(num_threads * sizeof(pthread_t)),
         .queues = calloc(num_threads, sizeof(ring_buffer_t)),
+        .stats = calloc(num_threads, sizeof(thread_stats_t))
     };
+
     atomic_init(&pool->next_queue, 0);
     pthread_mutex_init(&pool->done_lock, NULL);
     pthread_cond_init(&pool->all_done, NULL);
@@ -256,6 +269,7 @@ void destroy_thread_pool(threadpool_t *pool)
         free(q->tasks);
         sem_destroy(&q->sem);
     }
+    
     free(pool->queues);
     free(pool->threads);
     pthread_mutex_destroy(&pool->done_lock);
@@ -372,6 +386,13 @@ int main(int argc, char *argv[])
     mm(padA, padB, padC, padm, padn, padp, &pool);
     clock_gettime(CLOCK_MONOTONIC, &end);
 
+    for (size_t i = 0; i < N_CORES; ++i) {
+        printf("[Thread %zu] Steal attempts: %zu, success: %zu, failed: %zu\n",
+            i,
+            pool.stats[i].steal_attempts,
+            pool.stats[i].steal_success,
+            pool.stats[i].steal_fail);
+    }
     #ifndef VALIDATE
         double elapsed = (end.tv_sec - start.tv_sec) +
                         (end.tv_nsec - start.tv_nsec) / 1e9;

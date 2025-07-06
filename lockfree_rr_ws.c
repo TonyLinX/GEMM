@@ -36,6 +36,7 @@ typedef struct {
     size_t steal_attempts;
     size_t steal_success;
     size_t steal_fail;
+    size_t last_success_hits;
 } thread_stats_t;
 
 typedef struct __attribute__((aligned(MEM_ALIGNMENT))) {
@@ -131,9 +132,12 @@ void *worker_thread(void *arg)
     ring_buffer_t *selfQ  = &pool->queues[selfID];
     free(warg);
 
-    task_t task;   
+    task_t task;
     task_t steal_buf[STEAL_CHUNK]; // 偷到的任務暫存在這
     size_t steal_n = 0, steal_pos = 0;
+    size_t last_victim = (size_t)-1;      // 上次成功偷取的 queue
+    unsigned int rseed = (unsigned int)time(NULL) ^ (unsigned int)selfID;
+
     for (;;) {
         /* 先吃完前面偷到的任務 */
         if (steal_pos < steal_n) {
@@ -153,14 +157,24 @@ void *worker_thread(void *arg)
 
         /* busy-wait + work stealing */
         for (int spin = 0; spin < SPIN_LIMIT; ++spin) {
-            for (size_t off = 1; off < pool->num_threads; ++off) {
-                size_t victimID = (selfID + off) % pool->num_threads;
-                ring_buffer_t *vQ = &pool->queues[victimID];
+            for (size_t attempt = 1; attempt < pool->num_threads; ++attempt) {
+                size_t victimID;
+                if (attempt == 1 && last_victim != (size_t)-1 && last_victim != selfID) {
+                    victimID = last_victim;
+                } else {
+                    do {
+                        victimID = rand_r(&rseed) % pool->num_threads;
+                    } while (victimID == selfID);
+                }
                 
+                ring_buffer_t *vQ = &pool->queues[victimID];
                 // 試圖偷任務
                 pool->stats[selfID].steal_attempts++;
                 if (steal_batch(vQ, steal_buf, &steal_n)) {
                     pool->stats[selfID].steal_success++;
+                    if (victimID == last_victim)
+                        pool->stats[selfID].last_success_hits++;
+                    last_victim = victimID;
                     steal_pos = 0;
                     goto continue_loop;
                 }
@@ -270,8 +284,10 @@ void destroy_thread_pool(threadpool_t *pool)
         sem_destroy(&q->sem);
     }
     
+    
     free(pool->queues);
     free(pool->threads);
+    free(pool->stats);
     pthread_mutex_destroy(&pool->done_lock);
     pthread_cond_destroy(&pool->all_done);
 }
@@ -364,6 +380,8 @@ int main(int argc, char *argv[])
     size_t n = parse_int(argv[2]);
     size_t p = parse_int(argv[3]);
 
+    srand(time(NULL));
+
     threadpool_t pool;
 
     float *A = malloc(m * n * sizeof(float));
@@ -387,11 +405,12 @@ int main(int argc, char *argv[])
     clock_gettime(CLOCK_MONOTONIC, &end);
 
     for (size_t i = 0; i < N_CORES; ++i) {
-        printf("[Thread %zu] Steal attempts: %zu, success: %zu, failed: %zu\n",
+        printf("[Thread %zu] Steal attempts: %zu, success: %zu, failed: %zu, last-hit: %zu\n",
             i,
             pool.stats[i].steal_attempts,
             pool.stats[i].steal_success,
-            pool.stats[i].steal_fail);
+            pool.stats[i].steal_fail,
+            pool.stats[i].last_success_hits);
     }
     #ifndef VALIDATE
         double elapsed = (end.tv_sec - start.tv_sec) +
