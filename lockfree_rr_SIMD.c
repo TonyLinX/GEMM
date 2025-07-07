@@ -8,9 +8,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <immintrin.h>
 
 #ifndef STEAL_CHUNK
-#define STEAL_CHUNK 3
+#define STEAL_CHUNK 4
 #endif
 #define SPIN_LIMIT 1024
 #define TILE_SIZE 64
@@ -94,30 +95,59 @@ static bool steal_batch(ring_buffer_t *q, task_t *buf, size_t *n_stolen)
     return false;
 }
 
-// i/j 是 8×8 內部座標，ti/tj 是 64×64 內部座標，k 主宰整個內積長度 (2048)。
+// 一次計算 8*8 micro-tile，也是就是 64 個 float
 static inline void mm_tile(const task_t *task)
 {
-    printf("task->n_k:%ld\n ",task->n_k);
     for (size_t ti = 0; ti < TILE_SIZE; ti += MICRO_TILE) {
         for (size_t tj = 0; tj < TILE_SIZE; tj += MICRO_TILE) {
-            float sum[MICRO_TILE][MICRO_TILE] = {0};
-            for (size_t k = 0; k < task->n_k; k++) {
-                for (size_t i = 0; i < MICRO_TILE; i++) {
-                    float a = task->A[(ti + i) * task->stride_a + k];
-                    for (size_t j = 0; j < MICRO_TILE; j++){
+
+            __m256 c[MICRO_TILE];
+            for (int v = 0; v < MICRO_TILE; ++v) c[v] = _mm256_setzero_ps();
+
+            for (size_t k = 0; k < task->n_k; ++k) {
+                /* 1. broadcast A[ti~ti+7]][k] */
+                __m256 a0 = _mm256_set1_ps(task->A[(ti + 0) * task->stride_a + k]);
+                __m256 a1 = _mm256_set1_ps(task->A[(ti + 1) * task->stride_a + k]);
+                __m256 a2 = _mm256_set1_ps(task->A[(ti + 2) * task->stride_a + k]);
+                __m256 a3 = _mm256_set1_ps(task->A[(ti + 3) * task->stride_a + k]);
+                __m256 a4 = _mm256_set1_ps(task->A[(ti + 4) * task->stride_a + k]);
+                __m256 a5 = _mm256_set1_ps(task->A[(ti + 5) * task->stride_a + k]);
+                __m256 a6 = _mm256_set1_ps(task->A[(ti + 6) * task->stride_a + k]);
+                __m256 a7 = _mm256_set1_ps(task->A[(ti + 7) * task->stride_a + k]);
+
+                /* 2. 對固定 k，把 B 的 8 個 column 分別取出 */
+                const float *baseB = task->B + k; 
+                const size_t sb = task->stride_b;
                 
-                        sum[i][j] += a * task->B[(tj + j) * task->stride_b + k];
-                    }
-                        
-                }
+                //倒過來擺放的原因是 _mm256_set_ps 的設計是高位在前，低位在後，所以它的結構是 b[7][k]~b[0][k]，不是 b[0][k]~b[7][k]
+                __m256 b = _mm256_set_ps(
+                    baseB[(tj + 7) * sb],
+                    baseB[(tj + 6) * sb],
+                    baseB[(tj + 5) * sb],
+                    baseB[(tj + 4) * sb],
+                    baseB[(tj + 3) * sb],
+                    baseB[(tj + 2) * sb],
+                    baseB[(tj + 1) * sb],
+                    baseB[(tj + 0) * sb]);   
+
+                /* 3. FMA accumulate */
+                c[0] = _mm256_fmadd_ps(a0, b, c[0]);
+                c[1] = _mm256_fmadd_ps(a1, b, c[1]);
+                c[2] = _mm256_fmadd_ps(a2, b, c[2]);
+                c[3] = _mm256_fmadd_ps(a3, b, c[3]);
+                c[4] = _mm256_fmadd_ps(a4, b, c[4]);
+                c[5] = _mm256_fmadd_ps(a5, b, c[5]);
+                c[6] = _mm256_fmadd_ps(a6, b, c[6]);
+                c[7] = _mm256_fmadd_ps(a7, b, c[7]);
             }
-            for (size_t i = 0; i < MICRO_TILE; i++) {
-                for (size_t j = 0; j < MICRO_TILE; j++)
-                    task->C[(ti + i) * task->stride_c + (tj + j)] = sum[i][j];
-            }
+
+            /* 4. store back 8×8 */
+            for (int v = 0; v < 8; ++v)
+                _mm256_storeu_ps(&task->C[(ti + v) * task->stride_c + tj], c[v]);
         }
     }
 }
+
 typedef struct {
     threadpool_t *pool;
     size_t index;

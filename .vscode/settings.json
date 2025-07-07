@@ -3,6 +3,8 @@
         "pthread.h": "c",
         "unistd.h": "c",
         "time.h": "c",
-        "sched.h": "c"
+        "sched.h": "c",
+        "stdbool.h": "c",
+        "stdatomic.h": "c"
     }
 }

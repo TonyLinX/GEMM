@@ -1,8 +1,8 @@
 # Makefile for Q12 project
 CC = gcc
-CFLAGS = -O2 -pthread -DVALIDATE -g -mavx2 -mfma
+CFLAGS = -O2 -pthread -DVALIDATE -g 
 # Flags for performance builds without validation output
-CFLAGS_BENCH = -O2 -pthread -g -mavx2 -mfma
+CFLAGS_BENCH = -O2 -pthread -g
 BINDIR = build
 SRC_MAIN        = main.c
 SRC_LOCKFREE    = lockfree.c
@@ -46,7 +46,7 @@ lockfree_rr:
 
 lockfree_rr_SIMD:
 	mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS) -o $(EXE_LOCKFREERR_SIMD) $(SRC_LOCKFREERR_SIMD)
+	$(CC) $(CFLAGS) -o $(EXE_LOCKFREERR_SIMD) $(SRC_LOCKFREERR_SIMD) -mavx2 -mfma
 
 main_bench:
 	mkdir -p $(BINDIR)
@@ -66,7 +66,7 @@ lockfree_rr_bench:
 
 lockfree_rr_SIMD_bench:
 	mkdir -p $(BINDIR)
-	$(CC) $(CFLAGS_BENCH) -o $(EXE_LOCKFREERR_SIMD_BENCH) $(SRC_LOCKFREERR_SIMD)
+	$(CC) $(CFLAGS_BENCH) -o $(EXE_LOCKFREERR_SIMD_BENCH) $(SRC_LOCKFREERR_SIMD) -mavx2 -mfma
 
 # 使用 EXE=main 或 EXE=unoptimized 呼叫
 validate:
@@ -81,7 +81,7 @@ throughput:
 		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREE_BENCH)    $(SRC_LOCKFREE);    \
 		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREERR_BENCH)  $(SRC_LOCKFREERR);  \
 		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREERR_BENCH)  $(SRC_LOCKFREERR);  \
-		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREERR_SIMD_BENCH)  $(SRC_LOCKFREERR_SIMD);  \
+		$(CC) $(CFLAGS_BENCH) -DN_CORES=$$i -o $(EXE_LOCKFREERR_SIMD_BENCH)  $(SRC_LOCKFREERR_SIMD) -mavx2 -mfma;  \
 		time_main=`          ./$(EXE_MAIN_BENCH)       2048 2048 2048 | grep Time | awk '{print $$2}'`; \
 		time_lockfree=`      ./$(EXE_LOCKFREE_BENCH)    2048 2048 2048 | grep Time | awk '{print $$2}'`; \
 		time_lockfree_rr=`   ./$(EXE_LOCKFREERR_BENCH)  2048 2048 2048 | grep Time | awk '{print $$2}'`; \
@@ -94,8 +94,8 @@ stealchunk:
 	@echo "steal_chunk   time_sec" > throughput_stealchunk.txt
 	for c in $(shell seq 1 16); do \
 	echo "Testing STEAL_CHUNK=$$c"; \
-	$(CC) $(CFLAGS_BENCH) -DSTEAL_CHUNK=$$c -o $(EXE_LOCKFREERR_BENCH) $(SRC_LOCKFREERR); \
-	time_chunk=`./$(EXE_LOCKFREERR_BENCH) 2048 2048 2048 | grep Time | awk '{print $$2}'`; \
+	$(CC) $(CFLAGS_BENCH) -DSTEAL_CHUNK=$$c -o $(EXE_LOCKFREERR_SIMD_BENCH) $(SRC_LOCKFREERR_SIMD) -mavx2 -mfma; \
+	time_chunk=`./$(EXE_LOCKFREERR_SIMD_BENCH) 2048 2048 2048 | grep Time | awk '{print $$2}'`; \
 	printf "%-11d %-10s\n" $$c $$time_chunk >> throughput_stealchunk.txt; \
 	done
 	

@@ -1,7 +1,7 @@
 set terminal png size 640,480
 set output 'gnuplot/throughput_plot.png'
 
-set title "Lock-free vs. Lock-based vs. Lock-free-rrThroughput"
+set title "Lock-free vs. Lock-based vs. Lock-free-rr vs. Lock-free-SIMD Throughput"
 set xlabel "Number of threads"
 set ylabel "Throughput (Ops/s)"
 set grid
@@ -13,4 +13,5 @@ set pointsize 1.5
 # 用 1 / time 作為 throughput（反比時間）
 plot 'throughput.txt' using 1:(1/$2) title "Lock-based" lt rgb "red" pt 7, \
      'throughput.txt' using 1:(1/$3) title "Lock-free" lt rgb "blue" pt 5, \
-     'throughput.txt' using 1:(1/$4) title "Lock-free-rr" lt rgb "green" pt 3
+     'throughput.txt' using 1:(1/$4) title "Lock-free-rr" lt rgb "green" pt 3,\
+     'throughput.txt' using 1:(1/$5) title "Lock-free-SIMD" lt rgb "purple" pt 1

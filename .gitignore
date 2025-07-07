@@ -54,4 +54,4 @@ build/
 *.data
 /perf_data
 steal_number.log
-lockfree_rr_SIMD.c
+lockfree_rr_final.c
